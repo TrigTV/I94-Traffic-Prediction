@@ -10,12 +10,14 @@ The project combines exploratory analysis, feature engineering, model validation
 * Benchmarked Ridge Regression, Poisson GLM, Random Forest, XGBoost, and a stacked ensemble against two lookup-table baselines and three persistence baselines, using MAE, RMSE, and time-series cross validation.
 * Deployable one-hour-ahead model (no weather inputs): **MAE 153 veh/h, RMSE 237, R² 0.986**, about half the error of the hour-by-weekday lookup table (MAE 300) and a quarter of the last-hour persistence rule (MAE 592).
 * Deployable rolling 24-hour-ahead model (no weather inputs): **MAE 253 veh/h, RMSE 465, R² 0.945**. Each hour is predicted from its own 24-hour and 168-hour lags, so the forecast for every hour is issued exactly 24 hours before it. This is not a next-day forecast issued once at a fixed planning time, which would be a harder task.
-* Observed target-hour weather improved those figures by under 2%, so the models do not depend on a weather forecast. Against a like-for-like calendar-only forest (MAE 285), the traffic lags are worth 11%.
+* Observed target-hour weather improved those figures by under 2%, so the models do not depend on a weather forecast.
+* Isolated the traffic lags with a true ablation: the same stacked ensemble, same folds, same horizon and same rows, differing only in whether the lag columns are present. The lags are worth **12.2% of MAE** at the 24-hour horizon (288 to 253).
+* Enforced forecast-issue-time cut-offs by timestamp at every stacking fold, every cross-validation fold and the train-to-hold-out boundary, so a model predicting h hours ahead never trains on outcomes unobserved at issue time. The effect on results was negligible, which is itself the finding.
 * Found that **time of day and recent traffic history were the strongest predictors**; the two horizons are reported separately because the 1-hour lag accounts for most of the one-hour-ahead gain.
 * Found that weather provided limited improvement once temporal and historical traffic features were included.
 * Identified and handled data-quality problems: duplicate timestamps, a 10-month sensor gap, 0 K temperature rows, an impossible rainfall reading, and the July 2016 resurfacing anomaly.
 * Reported generalisation honestly: train-to-test error rises by 1% for the linear models, 8 to 10% for the forests and the one-hour-ahead stack, and up to 17% (RMSE) for the rolling 24-hour-ahead stack. Time-series cross-validation RMSE tracks hold-out RMSE within 10% for every model, so the CV estimate, not the training error, is the figure to trust.
-* Built deployable V5 variants that use no weather at the target hour and a time-aware stacker whose out-of-fold predictions never come from the future.
+* Built deployable V5 variants that use no weather at the target hour and a time-aware stacker whose out-of-fold predictions never come from the future or from outcomes unavailable at forecast issue time.
 
 ## Project Workflow
 
@@ -182,6 +184,7 @@ Models were evaluated on a chronological hold-out (September 2017 to September 2
 | Baseline | Hour-of-day mean | 647 | 944 |
 | Baseline | Hour by day-of-week mean | 300 | 529 |
 | Reference | Random Forest, calendar only (no weather, no lags) | 285 | 492 |
+| Ablation | Same V5 stack, calendar only (no lags) | 288 | 491 |
 | V1, calendar and weather features | Ridge / Poisson GLM | 779 / 804 | 974 / 1,008 |
 | V1, calendar and weather features | Random Forest | 289 | 512 |
 | V2, plus interaction and composite features | Stacked (RF + XGBoost, Ridge meta) | 283 | 503 |
@@ -191,9 +194,11 @@ Models were evaluated on a chronological hold-out (September 2017 to September 2
 | V5, calendar + 24 h / 7 d lags, no weather, time-aware stacking (rolling 24 h ahead) | Stacked | **253** | **465** |
 | Persistence | Same hour last week | 340 | 655 |
 
-The one-hour-ahead stack halves the error of the best lookup table; the rolling 24-hour-ahead stack improves on a genuinely calendar-only forest (no weather, no lags) by 11% on identical rows. Cross-validation RMSE agrees with hold-out RMSE within 10% for every model, so the gains reflect added signal rather than a fit to the training years. Training error is optimistic for the tree ensembles (up to 17% below test RMSE for the rolling 24-hour-ahead stack) and is not used for any claim.
+The one-hour-ahead stack halves the error of the best lookup table. At the 24-hour horizon, V5 beats the calendar-only forest by 11.2%, but that comparison changes the model and the feature set together; the clean lag ablation, holding the stack fixed, is 12.2%. Cross-validation RMSE agrees with hold-out RMSE within 10% for every model, so the gains reflect added signal rather than a fit to the training years. Training error is optimistic for the tree ensembles (up to 17% below test RMSE for the rolling 24-hour-ahead stack) and is not used for any claim.
 
-V3 and V4 use the weather observed at the target hour, which a real forecast would not have. The V5 rows are the deployable figures: no weather features and a time-aware stacking procedure. Measured the other way round, adding every weather feature to the calendar-only forest is worth 6.8 MAE, so weather is real but marginal.
+V3 and V4 use the weather observed at the target hour, which a real forecast would not have, and neither applies a forecast-horizon gap in training. The V5 rows are the deployable figures: no weather features, time-aware stacking, and issue-time cut-offs at every boundary. Measured the other way round, adding every weather feature to the calendar-only forest is worth 6.9 MAE, so weather is real but marginal.
+
+Both horizons are rolling evaluations at a fixed offset: every hour is predicted exactly h hours before it occurs. A forecast issued once at a fixed planning time for a whole day ahead is a different task and has not been evaluated.
 
 ## Key Insights
 
