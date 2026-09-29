@@ -6,22 +6,24 @@ The project combines exploratory analysis, feature engineering, model validation
 
 ## Key Results
 
-* Engineered temporal, holiday, weather, and traffic lag features ranging from 1 hour to 30 days.
-* Benchmarked Ridge Regression, Poisson GLM, Random Forest, XGBoost, and a stacked ensemble using MAE and RMSE.
-* Reduced forecasting error by **more than 50% compared with baseline approaches**.
-* Found that **time of day and historical traffic patterns were the strongest predictors**.
+* Engineered temporal, weather, and timestamp-aligned traffic lag features at 1 hour, 24 hours, and 1 week.
+* Benchmarked Ridge Regression, Poisson GLM, Random Forest, XGBoost, and a stacked ensemble against two lookup-table baselines and three persistence baselines, using MAE, RMSE, and time-series cross validation.
+* Best one-hour-ahead model: **MAE 151 veh/h, RMSE 236, R² 0.986**, about half the error of the hour-by-weekday lookup table (MAE 300) and a quarter of the last-hour persistence rule (MAE 592).
+* Best day-ahead model: **MAE 250 veh/h, RMSE 457, R² 0.947**, 10% better than the calendar-only forest on the same rows.
+* Found that **time of day and recent traffic history were the strongest predictors**; the two horizons are reported separately because the 1-hour lag accounts for most of the one-hour-ahead gain.
 * Found that weather provided limited improvement once temporal and historical traffic features were included.
-* Identified and investigated unusual observations, including extreme weather values and the July 2016 resurfacing anomaly.
+* Identified and handled data-quality problems: duplicate timestamps, a 10-month sensor gap, 0 K temperature rows, an impossible rainfall reading, and the July 2016 resurfacing anomaly.
+* Verified that no model over-fits: train, cross-validation, and hold-out errors stay within about 10% of each other at every stage.
 
 ## Project Workflow
 
 | Section | What I Did |
 |---|---|
-| **Data Loading and Cleaning** | Removed anomalous observations, corrected data types, validated weather fields, and prepared hourly traffic records for analysis |
-| **Exploratory Analysis** | Examined hourly, daily, seasonal, and weather related traffic patterns and investigated unusual periods in the dataset |
-| **Feature Engineering** | Created cyclical time features, period buckets, weekend and holiday indicators, weather categories, and traffic lag variables |
-| **Modeling** | Compared Ridge Regression, Poisson GLM, Random Forest, XGBoost, and stacked ensemble approaches |
-| **Evaluation** | Measured model performance using cross validation, MAE, and RMSE |
+| **Data Loading and Cleaning** | Removed anomalous observations, corrected data types, validated weather fields, de-duplicated repeated timestamps, and prepared hourly traffic records for analysis |
+| **Exploratory Analysis** | Examined hourly, daily, seasonal, holiday, and weather related traffic patterns and investigated unusual periods in the dataset |
+| **Feature Engineering** | Created cyclical time features, period buckets, weekend indicators, hour-by-condition interactions, weather categories, and timestamp-aligned traffic lag variables |
+| **Modeling** | Compared Ridge Regression, Poisson GLM, Random Forest, XGBoost, and a stacked ensemble at two forecast horizons (1 hour ahead and 1 day ahead) |
+| **Evaluation** | Measured model performance against lookup-table and persistence baselines using time-series cross validation, MAE, RMSE, and R² |
 | **Insights** | Found that temporal structure and historical traffic levels explained more variation than weather conditions |
 
 ## Tools and Technologies
@@ -75,10 +77,11 @@ The dataset was inspected for invalid values, extreme observations, and inconsis
 Cleaning steps included:
 
 * Correcting data types
-* Removing extreme temperature observations
-* Investigating abnormal rainfall values
-* Identifying the July 2016 traffic anomaly associated with resurfacing activity
-* Preparing timestamp information for temporal feature engineering
+* Removing ten rows whose temperature was logged as 0 K (a sensor error, not a conversion problem)
+* Removing one impossible rainfall reading (9,831 mm on 11 July 2016)
+* Identifying the July 2016 traffic anomaly associated with resurfacing activity and flash flooding
+* De-duplicating the 7,629 repeated timestamps (one row per weather description for the same hour) before building lag features
+* Looking lag values up by timestamp rather than by row position, so that missing hours (including a 10-month gap in 2014 to 2015) cannot misalign them
 
 These steps reduced the risk of unusual observations distorting the analysis or model results.
 
@@ -110,12 +113,14 @@ Several feature groups were created to improve model performance.
 
 ### Temporal Features
 
-* Hour of day
+* Hour of day (sine and cosine)
 * Day of week
-* Month
 * Weekend indicator
-* Holiday indicator
-* Time period buckets
+* Time period buckets (night, shoulder, rush core)
+* Period-by-day, period-by-temperature, period-by-rain, period-by-snow, and period-by-weekend composites
+* Hour-by-rain, hour-by-snow, and hour-by-weekend interaction terms
+
+Holidays and month were analysed in the exploratory section but are not model inputs.
 
 ### Cyclical Time Features
 
@@ -127,14 +132,13 @@ Weather observations were grouped into broader categories to reduce sparsity and
 
 ### Traffic Lag Features
 
-Historical traffic volume was incorporated using several lag periods:
+Historical traffic volume was incorporated using three lag periods, each looked up by timestamp on the de-duplicated record:
 
-* 1 hour
+* 1 hour (one-hour-ahead horizon only)
 * 24 hours
 * 7 days
-* 30 days
 
-These features allowed the models to capture recurring traffic patterns across several time scales.
+The 1-hour lag is only available when forecasting the next hour with live sensor data, so results are reported at two horizons: a one-hour-ahead model that uses all three lags, and a day-ahead model that uses only the 24-hour and 7-day lags.
 
 ## Modeling
 
@@ -158,17 +162,29 @@ Used gradient boosted decision trees to model nonlinear relationships within the
 
 ### Stacked Ensemble
 
-Combined predictions from multiple models to test whether an ensemble could improve forecast performance.
+Random Forest and XGBoost base learners blended by a Ridge meta-learner trained on their out-of-fold predictions plus the raw features. On the one-hour-ahead task the meta-learner weights XGBoost at 0.87 and the forest at 0.17.
 
 ## Model Evaluation
 
-Models were evaluated using:
+Models were evaluated on a chronological hold-out (September 2017 to September 2018) using:
 
 * Mean Absolute Error, MAE
 * Root Mean Squared Error, RMSE
-* Cross validation
+* R² on the hold-out year
+* 5-fold time-series cross validation on the training years
 
-The strongest models reduced forecasting error by **more than 50% compared with baseline approaches**.
+| Stage | Model | Test MAE | Test RMSE |
+|---|---|---:|---:|
+| Baseline | Hour-of-day mean | 647 | 944 |
+| Baseline | Hour by day-of-week mean | 300 | 529 |
+| V1, calendar and weather features | Ridge / Poisson GLM | 779 / 804 | 974 / 1,008 |
+| V1, calendar and weather features | Random Forest | 289 | 512 |
+| V2, plus interaction and composite features | Stacked (RF + XGBoost, Ridge meta) | 283 | 503 |
+| V3, plus 1 h / 24 h / 7 d lags (one hour ahead) | Stacked | **151** | **236** |
+| V4, plus 24 h / 7 d lags (one day ahead) | Stacked | **250** | **457** |
+| Persistence | Same hour last week | 340 | 655 |
+
+The one-hour-ahead stack halves the error of the best lookup table; the day-ahead stack improves on the calendar-only forest by about 10% on identical rows. Train, cross-validation, and test errors agree within about 10% for every model, so the gains reflect added signal rather than over-fitting.
 
 ## Key Insights
 
