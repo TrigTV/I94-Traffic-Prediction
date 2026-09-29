@@ -9,12 +9,12 @@ The project combines exploratory analysis, feature engineering, model validation
 * Engineered temporal, weather, and timestamp-aligned traffic lag features at 1 hour, 24 hours, and 1 week.
 * Benchmarked Ridge Regression, Poisson GLM, Random Forest, XGBoost, and a stacked ensemble against two lookup-table baselines and three persistence baselines, using MAE, RMSE, and time-series cross validation.
 * Deployable one-hour-ahead model (no weather inputs): **MAE 153 veh/h, RMSE 237, R² 0.986**, about half the error of the hour-by-weekday lookup table (MAE 300) and a quarter of the last-hour persistence rule (MAE 592).
-* Deployable day-ahead model (no weather inputs): **MAE 253 veh/h, RMSE 465, R² 0.945**, 9% better than the calendar-only forest on the same rows.
-* Observed target-hour weather improved those figures by under 2%, so the models do not depend on a weather forecast.
+* Deployable rolling 24-hour-ahead model (no weather inputs): **MAE 253 veh/h, RMSE 465, R² 0.945**. Each hour is predicted from its own 24-hour and 168-hour lags, so the forecast for every hour is issued exactly 24 hours before it. This is not a next-day forecast issued once at a fixed planning time, which would be a harder task.
+* Observed target-hour weather improved those figures by under 2%, so the models do not depend on a weather forecast. Against a like-for-like calendar-only forest (MAE 285), the traffic lags are worth 11%.
 * Found that **time of day and recent traffic history were the strongest predictors**; the two horizons are reported separately because the 1-hour lag accounts for most of the one-hour-ahead gain.
 * Found that weather provided limited improvement once temporal and historical traffic features were included.
 * Identified and handled data-quality problems: duplicate timestamps, a 10-month sensor gap, 0 K temperature rows, an impossible rainfall reading, and the July 2016 resurfacing anomaly.
-* Reported generalisation honestly: train-to-test error rises by 1% for the linear models, 8 to 10% for the forests and the one-hour-ahead stack, and up to 17% (RMSE) for the day-ahead stack. Time-series cross-validation RMSE tracks hold-out RMSE within 10% for every model, so the CV estimate, not the training error, is the figure to trust.
+* Reported generalisation honestly: train-to-test error rises by 1% for the linear models, 8 to 10% for the forests and the one-hour-ahead stack, and up to 17% (RMSE) for the rolling 24-hour-ahead stack. Time-series cross-validation RMSE tracks hold-out RMSE within 10% for every model, so the CV estimate, not the training error, is the figure to trust.
 * Built deployable V5 variants that use no weather at the target hour and a time-aware stacker whose out-of-fold predictions never come from the future.
 
 ## Project Workflow
@@ -24,7 +24,7 @@ The project combines exploratory analysis, feature engineering, model validation
 | **Data Loading and Cleaning** | Removed anomalous observations, corrected data types, validated weather fields, de-duplicated repeated timestamps, and prepared hourly traffic records for analysis |
 | **Exploratory Analysis** | Examined hourly, daily, seasonal, holiday, and weather related traffic patterns and investigated unusual periods in the dataset |
 | **Feature Engineering** | Created cyclical time features, period buckets, weekend indicators, hour-by-condition interactions, weather categories, and timestamp-aligned traffic lag variables |
-| **Modeling** | Compared Ridge Regression, Poisson GLM, Random Forest, XGBoost, and a stacked ensemble at two forecast horizons (1 hour ahead and 1 day ahead) |
+| **Modeling** | Compared Ridge Regression, Poisson GLM, Random Forest, XGBoost, and a stacked ensemble at two forecast horizons (1 hour ahead and a rolling 24 hours ahead) |
 | **Evaluation** | Measured model performance against lookup-table and persistence baselines using time-series cross validation, MAE, RMSE, and R² |
 | **Insights** | Found that temporal structure and historical traffic levels explained more variation than weather conditions |
 
@@ -140,7 +140,7 @@ Historical traffic volume was incorporated using three lag periods, each looked 
 * 24 hours
 * 7 days
 
-The 1-hour lag is only available when forecasting the next hour with live sensor data, so results are reported at two horizons: a one-hour-ahead model that uses all three lags, and a day-ahead model that uses only the 24-hour and 7-day lags.
+The 1-hour lag is only available when forecasting the next hour with live sensor data, so results are reported at two horizons: a one-hour-ahead model that uses all three lags, and a rolling 24-hour-ahead model that uses only the 24-hour and 7-day lags. In the rolling evaluation each hour is predicted from its own 24-hour lag, so every forecast is issued exactly 24 hours before its target hour.
 
 ## Modeling
 
@@ -164,7 +164,9 @@ Used gradient boosted decision trees to model nonlinear relationships within the
 
 ### Stacked Ensemble
 
-Random Forest and XGBoost base learners blended by a Ridge meta-learner. The V2 to V4 stacks use scikit-learn's StackingRegressor with unshuffled KFold, which lets base models trained on later years produce the out-of-fold predictions for earlier ones. V5 replaces it with a time-aware stacker: out-of-fold predictions come only from models trained on earlier data, and the meta weights are constrained to be non-negative because the two base predictions are almost collinear. The fix changed the meta weights (XGBoost 0.78 to 0.90, forest 0.09 to 0.22) but moved the hold-out error by less than 0.1%.
+Random Forest and XGBoost base learners blended by a Ridge meta-learner. The V2 to V4 stacks use scikit-learn's StackingRegressor with unshuffled KFold, which lets base models trained on later years produce the out-of-fold predictions for earlier ones.
+
+V5 replaces that with a time-aware stacker. It differs from the earlier stack in three ways at once: out-of-fold predictions come only from models trained on earlier data, the 82 passthrough features are dropped so the meta-learner sees only the two base predictions, and the meta-learner changes from an unconstrained RidgeCV to a fixed-alpha Ridge with non-negative weights. The non-negativity matters because the two base predictions are nearly collinear; without it one fold produced weights of 1.3 and 2.3 with an intercept of -8,480. Because the three changes move together, the before-and-after comparison measures their combined effect and cannot isolate the fold scheme. The combined effect on hold-out error is under 0.1%.
 
 ## Model Evaluation
 
@@ -179,18 +181,19 @@ Models were evaluated on a chronological hold-out (September 2017 to September 2
 |---|---|---:|---:|
 | Baseline | Hour-of-day mean | 647 | 944 |
 | Baseline | Hour by day-of-week mean | 300 | 529 |
+| Reference | Random Forest, calendar only (no weather, no lags) | 285 | 492 |
 | V1, calendar and weather features | Ridge / Poisson GLM | 779 / 804 | 974 / 1,008 |
 | V1, calendar and weather features | Random Forest | 289 | 512 |
 | V2, plus interaction and composite features | Stacked (RF + XGBoost, Ridge meta) | 283 | 503 |
 | V3, plus 1 h / 24 h / 7 d lags, observed weather (one hour ahead) | Stacked | 151 | 236 |
-| V4, plus 24 h / 7 d lags, observed weather (one day ahead) | Stacked | 250 | 457 |
+| V4, plus 24 h / 7 d lags, observed weather (rolling 24 h ahead) | Stacked | 250 | 457 |
 | V5, calendar + 1 h / 24 h / 7 d lags, no weather, time-aware stacking (one hour ahead) | Stacked | **153** | **237** |
-| V5, calendar + 24 h / 7 d lags, no weather, time-aware stacking (one day ahead) | Stacked | **253** | **465** |
+| V5, calendar + 24 h / 7 d lags, no weather, time-aware stacking (rolling 24 h ahead) | Stacked | **253** | **465** |
 | Persistence | Same hour last week | 340 | 655 |
 
-The one-hour-ahead stack halves the error of the best lookup table; the day-ahead stack improves on the calendar-only forest by about 10% on identical rows. Cross-validation RMSE agrees with hold-out RMSE within 10% for every model, so the gains reflect added signal rather than a fit to the training years. Training error is optimistic for the tree ensembles (up to 17% below test RMSE for the day-ahead stack) and is not used for any claim.
+The one-hour-ahead stack halves the error of the best lookup table; the rolling 24-hour-ahead stack improves on a genuinely calendar-only forest (no weather, no lags) by 11% on identical rows. Cross-validation RMSE agrees with hold-out RMSE within 10% for every model, so the gains reflect added signal rather than a fit to the training years. Training error is optimistic for the tree ensembles (up to 17% below test RMSE for the rolling 24-hour-ahead stack) and is not used for any claim.
 
-V3 and V4 use the weather observed at the target hour, which a real forecast would not have. The V5 rows are the deployable figures: no weather features and a time-aware stacking procedure.
+V3 and V4 use the weather observed at the target hour, which a real forecast would not have. The V5 rows are the deployable figures: no weather features and a time-aware stacking procedure. Measured the other way round, adding every weather feature to the calendar-only forest is worth 6.8 MAE, so weather is real but marginal.
 
 ## Key Insights
 
